@@ -1,15 +1,154 @@
 // ============================================
-// src/routes/destinations.js - COMPLETE FIXED VERSION
+// src/routes/destinations.js - UPDATED WITH IMAGE UPLOAD
 // ============================================
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 const destinationController = require("../controllers/destinationController");
 const { auth, adminOnly } = require("../middleware/auth");
+
+// ============================================
+// IMAGE UPLOAD CONFIGURATION
+// ============================================
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, "../../uploads/destinations");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log("✅ Created uploads directory:", uploadsDir);
+}
+
+// Configure multer for image uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename: destination-timestamp-random.ext
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const extension = path.extname(file.originalname);
+    cb(null, `destination-${uniqueSuffix}${extension}`);
+  },
+});
+
+// File filter for images only
+const fileFilter = (req, file, cb) => {
+  console.log(
+    "🔍 File filter - checking file:",
+    file.originalname,
+    file.mimetype
+  );
+
+  if (file.mimetype.startsWith("image/")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only image files are allowed!"), false);
+  }
+};
+
+// Configure multer
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+});
+
+// ============================================
+// IMAGE UPLOAD ROUTES
+// ============================================
+
+// Upload destination images (multiple files) - STORES FILENAME ONLY
+router.post(
+  "/upload-images",
+  auth,
+  adminOnly,
+  upload.array("images", 5),
+  async (req, res) => {
+    try {
+      console.log("🖼️ === IMAGE UPLOAD ===");
+      console.log("Files received:", req.files?.length || 0);
+
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: "No images uploaded",
+        });
+      }
+
+      // ✅ Store only filename and metadata, not full path/URL
+      const uploadedImages = req.files.map((file) => {
+        console.log(`✅ Uploaded: ${file.originalname} -> ${file.filename}`);
+
+        return {
+          originalName: file.originalname,
+          filename: file.filename, // ✅ Only store filename
+          size: file.size,
+          mimetype: file.mimetype,
+        };
+      });
+
+      res.json({
+        success: true,
+        message: `${uploadedImages.length} image(s) uploaded successfully`,
+        data: {
+          images: uploadedImages,
+        },
+      });
+    } catch (error) {
+      console.error("❌ Image upload error:", error);
+      res.status(500).json({
+        success: false,
+        error: "Failed to upload images",
+        details: error.message,
+      });
+    }
+  }
+);
+
+// Delete uploaded image
+router.delete("/images/:filename", auth, adminOnly, async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const filePath = path.join(uploadsDir, filename);
+
+    console.log("🗑️ Deleting image:", filename);
+
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      console.log("✅ Image deleted successfully");
+
+      res.json({
+        success: true,
+        message: "Image deleted successfully",
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: "Image not found",
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error deleting image:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to delete image",
+      details: error.message,
+    });
+  }
+});
+
+// ============================================
+// EXISTING ROUTES WITH IMAGE SUPPORT
+// ============================================
 
 // Get all destinations
 router.get("/", destinationController.getAll);
 
-// Get single destination by ID
+// Get single destination by ID - UPDATED WITH IMAGE HANDLING
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -40,14 +179,9 @@ router.get("/:id", async (req, res) => {
       [id]
     );
 
-    console.log(`📊 Found ${content.length} content items:`);
-    content.forEach((item, index) => {
-      console.log(
-        `  ${index + 1}. Type: ${item.content_type}, Content: "${item.content}"`
-      );
-    });
+    console.log(`📊 Found ${content.length} content items`);
 
-    // ✅ FIXED: Group content by type - MATCH DATABASE STRUCTURE
+    // Group content by type - MATCH DATABASE STRUCTURE
     const groupedContent = {
       attraction: [], // ✅ Match database content_type
       local_tip: [], // ✅ Match database content_type
@@ -55,7 +189,6 @@ router.get("/:id", async (req, res) => {
     };
 
     content.forEach((item) => {
-      console.log(`🔄 Processing content item: ${item.content_type}`);
       if (groupedContent.hasOwnProperty(item.content_type)) {
         groupedContent[item.content_type].push({
           id: item.id,
@@ -64,39 +197,48 @@ router.get("/:id", async (req, res) => {
           file_url: item.file_url,
           sort_order: item.sort_order,
         });
-        console.log(`  ✅ Added to ${item.content_type} group`);
-      } else {
-        console.log(`  ❌ Unknown content type: ${item.content_type}`);
       }
     });
-
-    console.log(`📋 GROUPED CONTENT SUMMARY:`);
-    console.log(`  attraction: ${groupedContent.attraction.length} items`);
-    console.log(`  local_tip: ${groupedContent.local_tip.length} items`);
-    console.log(`  sales_point: ${groupedContent.sales_point.length} items`);
 
     // Parse climate if it's a JSON string
     if (destination.climate && typeof destination.climate === "string") {
       try {
         destination.climate = JSON.parse(destination.climate);
-        console.log(`✅ Parsed climate JSON`);
       } catch (e) {
         console.warn("Failed to parse climate JSON:", e);
       }
     }
 
-    // ✅ FIXED: Combine destination with content - MAP TO FRONTEND EXPECTED NAMES
+    // ✅ NEW: Parse images and convert filenames to URLs for frontend
+    let images = [];
+    if (destination.images) {
+      try {
+        const imageData =
+          typeof destination.images === "string"
+            ? JSON.parse(destination.images)
+            : destination.images;
+
+        // Convert filenames to full URLs for frontend
+        images = imageData.map((img) => ({
+          ...img,
+          url: `/uploads/destinations/${img.filename}`, // ✅ Create URL from filename
+        }));
+
+        console.log(`📸 Processed ${images.length} images`);
+      } catch (e) {
+        console.warn("Failed to parse images JSON:", e);
+        images = [];
+      }
+    }
+
+    // Combine destination with content - MAP TO FRONTEND EXPECTED NAMES
     const result = {
       ...destination,
+      images: images, // ✅ Images with URLs created from filenames
       attractions: groupedContent.attraction, // ✅ Map attraction -> attractions
       localTips: groupedContent.local_tip, // ✅ Map local_tip -> localTips
       salesPoints: groupedContent.sales_point, // ✅ Map sales_point -> salesPoints
     };
-
-    console.log(`🎯 FINAL RESULT FOR FRONTEND:`);
-    console.log(`  - attractions: ${result.attractions.length} items`);
-    console.log(`  - localTips: ${result.localTips.length} items`);
-    console.log(`  - salesPoints: ${result.salesPoints.length} items`);
 
     // Update view count
     await db.query(
@@ -116,25 +258,16 @@ router.get("/:id", async (req, res) => {
     });
   }
 });
-// Create new destination (admin only) - COMPLETE FIXED VERSION
+
+// Create new destination (admin only) - UPDATED WITH IMAGE SUPPORT
 router.post("/", auth, adminOnly, async (req, res) => {
   try {
-    console.log("🔍 === AUTHENTICATION DEBUG ===");
-    console.log("Headers:", req.headers);
-    console.log("Authorization header:", req.headers.authorization);
-    console.log("req.user:", req.user);
-    console.log("req.user type:", typeof req.user);
-    if (req.user) {
-      console.log("req.user.id:", req.user.id);
-      console.log("req.user.id type:", typeof req.user.id);
-    }
-
-    console.log("🔍 === REQUEST BODY DEBUG ===");
+    console.log("🔍 === CREATE DESTINATION WITH IMAGES ===");
     console.log("req.body:", JSON.stringify(req.body, null, 2));
 
     const db = require("../config/database");
 
-    // EXTRACT ALL VARIABLES FIRST - BEFORE USING THEM
+    // EXTRACT ALL VARIABLES INCLUDING IMAGES
     const {
       name,
       country,
@@ -146,21 +279,21 @@ router.post("/", auth, adminOnly, async (req, res) => {
       language,
       timeZone,
       climate,
-      attractions, // ✅ Now extracted
-      localTips, // ✅ Now extracted
-      salesPoints, // ✅ Now extracted
-      // Climate could come as separate fields or as object
+      attractions,
+      localTips,
+      salesPoints,
+      images, // ✅ NEW: Extract images array
       springClimate,
       summerClimate,
       autumnClimate,
       winterClimate,
     } = req.body;
 
-    // NOW we can safely use the variables in console.log
     console.log("🔍 === CONTENT FIELDS EXTRACTION ===");
     console.log("attractions:", attractions, "(type:", typeof attractions, ")");
     console.log("localTips:", localTips, "(type:", typeof localTips, ")");
     console.log("salesPoints:", salesPoints, "(type:", typeof salesPoints, ")");
+    console.log("images:", images, "(type:", typeof images, ")"); // ✅ NEW
 
     if (!name || !country) {
       return res.status(400).json({
@@ -169,23 +302,11 @@ router.post("/", auth, adminOnly, async (req, res) => {
       });
     }
 
-    // EXPLICITLY handle undefined user ID
-    let userId;
-    if (req.user && req.user.id !== undefined && req.user.id !== null) {
-      userId = req.user.id;
-      console.log("✅ Using authenticated user ID:", userId);
-    } else {
-      userId = 1; // Fallback
-      console.log("⚠️ Using fallback user ID:", userId);
-    }
+    const userId = req.user?.id || 1;
 
-    console.log("🔍 === CLIMATE DATA PROCESSING ===");
+    // Process climate data
     let processedClimate = null;
-
-    // Handle climate data - could come as object or separate fields
     if (climate && typeof climate === "object") {
-      // Climate sent as single object
-      console.log("Climate received as object:", climate);
       processedClimate = JSON.stringify(climate);
     } else if (
       springClimate ||
@@ -193,50 +314,52 @@ router.post("/", auth, adminOnly, async (req, res) => {
       autumnClimate ||
       winterClimate
     ) {
-      // Climate sent as separate fields (from form)
-      console.log("Climate received as separate fields");
       const climateObject = {
         spring: springClimate || "",
         summer: summerClimate || "",
         autumn: autumnClimate || "",
         winter: winterClimate || "",
       };
-      // Only stringify if at least one field has content
       const hasContent = Object.values(climateObject).some(
         (val) => val && val.trim()
       );
       if (hasContent) {
         processedClimate = JSON.stringify(climateObject);
-        console.log("Combined climate object:", processedClimate);
       }
     } else if (climate && typeof climate === "string") {
-      // Climate sent as string
       processedClimate = climate.trim() || null;
-      console.log("Climate as string:", processedClimate);
     }
 
-    console.log("Final processed climate:", processedClimate);
+    // ✅ NEW: Process images data - store only metadata
+    let processedImages = null;
+    if (images && Array.isArray(images) && images.length > 0) {
+      // Store only the metadata (filename, originalName, size, mimetype)
+      const imageMetadata = images.map((img) => ({
+        originalName: img.originalName,
+        filename: img.filename,
+        size: img.size,
+        mimetype: img.mimetype,
+      }));
 
-    console.log("🔍 === VALUES PROCESSING ===");
+      processedImages = JSON.stringify(imageMetadata);
+      console.log("✅ Processed images metadata:", processedImages);
+    }
+
     const processValue = (value, fieldName) => {
       if (value === undefined) {
-        console.log(`  ${fieldName}: undefined -> null`);
         return null;
       }
       if (value === null) {
-        console.log(`  ${fieldName}: null -> null`);
         return null;
       }
       if (typeof value === "string" && value.trim() === "") {
-        console.log(`  ${fieldName}: empty string -> null`);
         return null;
       }
-      console.log(`  ${fieldName}: ${typeof value} = "${value}"`);
       return value;
     };
 
     try {
-      // 1. INSERT INTO destinations table
+      // 1. INSERT INTO destinations table - WITH IMAGES COLUMN
       const destinationValues = [
         processValue(name, "name"),
         processValue(country, "country"),
@@ -247,43 +370,19 @@ router.post("/", auth, adminOnly, async (req, res) => {
         processValue(currency, "currency"),
         processValue(language, "language"),
         processValue(timeZone, "timeZone"),
-        processedClimate, // ✅ Single JSON string for climate
+        processedClimate,
+        processedImages, // ✅ NEW: Add images to insert
         userId,
         "published",
       ];
 
-      console.log("🔍 === FINAL ARRAY CHECK ===");
-      destinationValues.forEach((val, index) => {
-        const status = val === undefined ? "❌ UNDEFINED!" : "✅";
-        console.log(
-          `  [${index + 1}] ${typeof val} = ${JSON.stringify(val)} ${status}`
-        );
-      });
-
-      // Last safety check
-      const undefinedIndex = destinationValues.findIndex(
-        (v) => v === undefined
-      );
-      if (undefinedIndex !== -1) {
-        console.log(`❌ FOUND UNDEFINED AT INDEX ${undefinedIndex + 1}`);
-        return res.status(400).json({
-          success: false,
-          error: `Undefined value at parameter ${undefinedIndex + 1}`,
-          debug: { values: destinationValues, undefinedIndex },
-        });
-      }
-
       const destinationSql = `INSERT INTO destinations (
         name, country, region, overview, best_time_to_visit, visa_rules,
-        currency, language, time_zone, climate, created_by, status,
+        currency, language, time_zone, climate, images, created_by, status,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
 
       console.log("🔍 === SQL EXECUTION ===");
-      console.log("SQL:", destinationSql);
-      console.log("Values count:", destinationValues.length);
-      console.log("About to execute query...");
-
       const destinationResult = await db.query(
         destinationSql,
         destinationValues
@@ -292,140 +391,44 @@ router.post("/", auth, adminOnly, async (req, res) => {
 
       console.log("✅ SUCCESS! Insert ID:", destinationId);
 
-      // 2. INSERT INTO destination_content table (attractions, local_tips, sales_points)
+      // 2. INSERT content (same as before)
       const insertContent = async (contentData, contentType) => {
-        console.log(
-          `\n🔍 === PROCESSING ${contentType.toUpperCase()} CONTENT ===`
-        );
-        console.log(`Content data received:`, contentData);
-        console.log(`Content data type:`, typeof contentData);
-        console.log(`Content data is array:`, Array.isArray(contentData));
-
-        if (!contentData) {
-          console.log(`❌ No ${contentType} data provided - skipping`);
-          return 0;
-        }
+        if (!contentData) return 0;
 
         let contentArray = [];
-
-        // Handle different input formats
         if (Array.isArray(contentData)) {
-          console.log(
-            `📝 Processing as array with ${contentData.length} items`
-          );
-          contentArray = contentData.filter((item) => {
-            const isValid = item && typeof item === "string" && item.trim();
-            console.log(`  Item: "${item}" -> Valid: ${!!isValid}`);
-            return isValid;
-          });
-          console.log(
-            `✅ Array format: ${contentArray.length} valid items after filtering`
+          contentArray = contentData.filter(
+            (item) => item && typeof item === "string" && item.trim()
           );
         } else if (typeof contentData === "string" && contentData.trim()) {
-          console.log(`📝 Processing as string: "${contentData}"`);
           contentArray = contentData
             .split("\n")
             .map((item) => item.trim())
             .filter((item) => item);
-          console.log(
-            `✅ String format: ${contentArray.length} items after splitting by newlines`
-          );
-        } else {
-          console.log(`❌ Invalid ${contentType} format or empty data`);
-          console.log(`  Data type: ${typeof contentData}`);
-          console.log(`  Data value: ${contentData}`);
-          return 0;
         }
-
-        if (contentArray.length === 0) {
-          console.log(
-            `❌ No valid ${contentType} items found after processing`
-          );
-          return 0;
-        }
-
-        console.log(
-          `🎯 Will insert ${contentArray.length} ${contentType} items:`
-        );
-        contentArray.forEach((item, i) =>
-          console.log(`  ${i + 1}. "${item.substring(0, 60)}..."`)
-        );
 
         let insertedCount = 0;
         for (let i = 0; i < contentArray.length; i++) {
           const item = contentArray[i];
-
-          try {
-            console.log(
-              `🔄 Inserting ${contentType} item ${i + 1}: "${item.substring(
-                0,
-                30
-              )}..."`
-            );
-            const insertResult = await db.query(
-              `INSERT INTO destination_content (
-                destination_id, content_type, title, content, sort_order, status, created_at
-              ) VALUES (?, ?, ?, ?, ?, 'active', NOW())`,
-              [destinationId, contentType, null, item, i]
-            );
-
-            console.log(
-              `  ✅ Inserted ${contentType} ${i + 1}: ID ${
-                insertResult.insertId
-              } - "${item.substring(0, 50)}..."`
-            );
-            insertedCount++;
-          } catch (insertError) {
-            console.error(
-              `  ❌ Error inserting ${contentType} item ${i + 1}:`,
-              insertError.message
-            );
-            console.error(`  ❌ Values were:`, [
-              destinationId,
-              contentType,
-              null,
-              item,
-              i,
-            ]);
-            throw insertError;
-          }
+          await db.query(
+            `INSERT INTO destination_content (
+              destination_id, content_type, title, content, sort_order, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'active', NOW())`,
+            [destinationId, contentType, null, item, i]
+          );
+          insertedCount++;
         }
-
-        console.log(
-          `🎉 Successfully inserted ${insertedCount}/${contentArray.length} ${contentType} items`
-        );
         return insertedCount;
       };
 
-      // Insert content with detailed logging
-      console.log("\n🔍 === STARTING CONTENT INSERTION ===");
-      const attractionsInserted = await insertContent(
-        attractions,
-        "attraction"
-      );
-      const tipsInserted = await insertContent(localTips, "local_tip");
-      const salesInserted = await insertContent(salesPoints, "sales_point");
+      await insertContent(attractions, "attraction");
+      await insertContent(localTips, "local_tip");
+      await insertContent(salesPoints, "sales_point");
 
-      console.log(`\n📊 CONTENT INSERTION SUMMARY:`);
-      console.log(`  Attractions: ${attractionsInserted} inserted`);
-      console.log(`  Local Tips: ${tipsInserted} inserted`);
-      console.log(`  Sales Points: ${salesInserted} inserted`);
-      console.log(
-        `  Total Content Items: ${
-          attractionsInserted + tipsInserted + salesInserted
-        } inserted`
-      );
-
-      // Fetch the created destination to return complete data
+      // Get the created destination with content
       const createdDestination = await db.query(
         "SELECT * FROM destinations WHERE id = ?",
         [destinationId]
-      );
-
-      // Get destination content from destination_content table
-      console.log(`\n🔍 === RETRIEVING CONTENT FROM DATABASE ===`);
-      console.log(
-        `Looking for content where destination_id = ${destinationId}`
       );
 
       const content = await db.query(
@@ -433,24 +436,14 @@ router.post("/", auth, adminOnly, async (req, res) => {
         [destinationId]
       );
 
-      console.log(`📊 Found ${content.length} content items in database:`);
-      content.forEach((item, index) => {
-        console.log(
-          `  ${index + 1}. ID: ${item.id}, Type: ${
-            item.content_type
-          }, Content: "${item.content.substring(0, 50)}..."`
-        );
-      });
-
       // Group content by type
       const groupedContent = {
-        attraction: [], // ✅ Match database content_type
-        local_tip: [], // ✅ Match database content_type
-        sales_point: [], // ✅ Match database content_type
+        attraction: [],
+        local_tip: [],
+        sales_point: [],
       };
 
       content.forEach((item) => {
-        console.log(`🔄 Processing item: ${item.content_type}`);
         if (groupedContent.hasOwnProperty(item.content_type)) {
           groupedContent[item.content_type].push({
             id: item.id,
@@ -459,18 +452,10 @@ router.post("/", auth, adminOnly, async (req, res) => {
             file_url: item.file_url,
             sort_order: item.sort_order,
           });
-          console.log(`  ✅ Added to ${item.content_type} group`);
-        } else {
-          console.log(`  ❌ Unknown content type: ${item.content_type}`);
         }
       });
 
-      console.log(`\n📋 GROUPED CONTENT SUMMARY:`);
-      console.log(`  attraction: ${groupedContent.attraction.length} items`);
-      console.log(`  local_tip: ${groupedContent.local_tip.length} items`);
-      console.log(`  sales_point: ${groupedContent.sales_point.length} items`);
-
-      // Parse climate back to object for response
+      // Parse response data
       let destination = createdDestination[0];
       if (destination.climate && typeof destination.climate === "string") {
         try {
@@ -480,26 +465,32 @@ router.post("/", auth, adminOnly, async (req, res) => {
         }
       }
 
-      // Combine destination with content - MAP TO FRONTEND EXPECTED NAMES
+      // ✅ NEW: Parse images for response and add URLs
+      let destinationImages = [];
+      if (destination.images) {
+        try {
+          const imageData =
+            typeof destination.images === "string"
+              ? JSON.parse(destination.images)
+              : destination.images;
+
+          // Add URLs to image metadata for frontend
+          destinationImages = imageData.map((img) => ({
+            ...img,
+            url: `/uploads/destinations/${img.filename}`,
+          }));
+        } catch (e) {
+          console.warn("Failed to parse images JSON for response");
+        }
+      }
+
       const result = {
         ...destination,
-        attractions: groupedContent.attraction, // ✅ Map attraction -> attractions
-        localTips: groupedContent.local_tip, // ✅ Map local_tip -> localTips
-        salesPoints: groupedContent.sales_point, // ✅ Map sales_point -> salesPoints
+        images: destinationImages, // ✅ NEW: Include images in response
+        attractions: groupedContent.attraction,
+        localTips: groupedContent.local_tip,
+        salesPoints: groupedContent.sales_point,
       };
-
-      console.log("✅ === FINAL RESULT ===");
-      console.log("Destination created with:", {
-        id: result.id,
-        name: result.name,
-        currency: result.currency,
-        language: result.language,
-        time_zone: result.time_zone,
-        climate: result.climate,
-        attractions: result.attractions.length,
-        localTips: result.localTips.length,
-        salesPoints: result.salesPoints.length,
-      });
 
       res.status(201).json({
         success: true,
@@ -511,45 +502,22 @@ router.post("/", auth, adminOnly, async (req, res) => {
       throw error;
     }
   } catch (error) {
-    console.error("❌ === DETAILED ERROR ANALYSIS ===");
-    console.error("Error message:", error.message);
-    console.error("Error name:", error.name);
-    console.error("Error code:", error.code);
-    console.error("Error errno:", error.errno);
-    console.error("Error sqlState:", error.sqlState);
-    console.error("Error sqlMessage:", error.sqlMessage);
-    console.error("Full error object keys:", Object.keys(error));
-    console.error(
-      "Full error:",
-      JSON.stringify(error, Object.getOwnPropertyNames(error), 2)
-    );
-    console.error("Error stack:", error.stack);
-
+    console.error("❌ Create error:", error);
     res.status(500).json({
       success: false,
       error: "Failed to create destination",
       details: error.message,
-      debug: {
-        errorType: error.constructor.name,
-        errorCode: error.code,
-        sqlMessage: error.sqlMessage,
-        user: req.user,
-        userId: req.user?.id,
-        hasAuthHeader: !!req.headers.authorization,
-      },
     });
   }
 });
 
-// Update destination (admin only) - FIXED VERSION WITHOUT TRANSACTIONS
-// Update destination (admin only) - FIXED VERSION WITH CLEAN DELETE
+// Update destination (admin only) - UPDATED WITH IMAGE SUPPORT
 router.put("/:id", auth, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
 
-    console.log("🔥 === UPDATE DESTINATION ===");
+    console.log("🔥 === UPDATE DESTINATION WITH IMAGES ===");
     console.log("ID:", id);
-    console.log("Raw request body:", req.body);
 
     const db = require("../config/database");
 
@@ -567,6 +535,7 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
       attractions,
       localTips,
       salesPoints,
+      images, // ✅ NEW: Extract images
       status,
       featured,
     } = req.body;
@@ -584,7 +553,6 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
       });
     }
 
-    // Validation
     if (!name || !country) {
       return res.status(400).json({
         success: false,
@@ -595,67 +563,57 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
     const userId = req.user?.id || 1;
 
     // Helper functions
-    const processStringField = (data, fieldName) => {
-      if (data === null || data === undefined) {
-        return null;
-      }
-      if (typeof data === "string") {
-        const trimmed = data.trim();
-        return trimmed || null;
-      }
+    const processStringField = (data) => {
+      if (data === null || data === undefined) return null;
+      if (typeof data === "string") return data.trim() || null;
       return null;
     };
 
-    const processJSONField = (data, fieldName) => {
-      if (data === null || data === undefined) {
-        return null;
-      }
+    const processJSONField = (data) => {
+      if (data === null || data === undefined) return null;
       if (typeof data === "object") {
         const hasContent = Object.values(data).some(
           (value) => value && value.toString().trim()
         );
-        if (!hasContent) {
-          return null;
-        }
+        if (!hasContent) return null;
         return JSON.stringify(data);
       }
-      if (typeof data === "string") {
-        const trimmed = data.trim();
-        return trimmed || null;
-      }
+      if (typeof data === "string") return data.trim() || null;
       return null;
     };
 
+    // ✅ NEW: Process images - store only metadata
+    let processedImages = null;
+    if (images && Array.isArray(images) && images.length > 0) {
+      const imageMetadata = images.map((img) => ({
+        originalName: img.originalName,
+        filename: img.filename,
+        size: img.size,
+        mimetype: img.mimetype,
+      }));
+      processedImages = JSON.stringify(imageMetadata);
+    }
+
     try {
-      // 1. UPDATE destinations table
-      const updateResult = await db.query(
+      // 1. UPDATE destinations table - WITH IMAGES
+      await db.query(
         `UPDATE destinations SET 
-          name = ?,
-          country = ?,
-          region = ?,
-          overview = ?,
-          best_time_to_visit = ?,
-          visa_rules = ?,
-          currency = ?,
-          language = ?,
-          time_zone = ?,
-          climate = ?,
-          status = ?,
-          featured = ?,
-          updated_by = ?,
-          updated_at = NOW()
+          name = ?, country = ?, region = ?, overview = ?, best_time_to_visit = ?,
+          visa_rules = ?, currency = ?, language = ?, time_zone = ?, climate = ?,
+          images = ?, status = ?, featured = ?, updated_by = ?, updated_at = NOW()
         WHERE id = ?`,
         [
-          processStringField(name, "name"),
-          processStringField(country, "country"),
-          processStringField(region, "region"),
-          processStringField(overview, "overview"),
-          processStringField(bestTimeToVisit, "bestTimeToVisit"),
-          processStringField(visaRules, "visaRules"),
-          processStringField(currency, "currency"),
-          processStringField(language, "language"),
-          processStringField(timeZone, "timeZone"),
-          processJSONField(climate, "climate"),
+          processStringField(name),
+          processStringField(country),
+          processStringField(region),
+          processStringField(overview),
+          processStringField(bestTimeToVisit),
+          processStringField(visaRules),
+          processStringField(currency),
+          processStringField(language),
+          processStringField(timeZone),
+          processJSONField(climate),
+          processedImages, // ✅ NEW: Update images
           status || "published",
           featured !== undefined ? featured : false,
           userId,
@@ -663,115 +621,50 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
         ]
       );
 
-      console.log("✅ Destination updated successfully");
-
-      // 2. CLEAN UPDATE destination_content table - DELETE AND REPLACE
-      console.log("🔄 Cleaning up old content...");
-
-      // ✅ FIXED: DELETE all existing content completely (don't just mark inactive)
-      const deleteResult = await db.query(
+      // 2. Clean update content (same as before)
+      await db.query(
         "DELETE FROM destination_content WHERE destination_id = ?",
         [id]
       );
 
-      console.log(`🗑️ Deleted ${deleteResult.affectedRows} old content items`);
-
-      // Then insert new content with better error handling
       const insertContent = async (contentArray, contentType) => {
-        if (
-          !contentArray ||
-          !Array.isArray(contentArray) ||
-          contentArray.length === 0
-        ) {
-          console.log(`  No ${contentType} to insert`);
-          return 0;
-        }
+        if (!contentArray || !Array.isArray(contentArray)) return 0;
 
-        console.log(`📝 Inserting ${contentArray.length} ${contentType} items`);
         let insertedCount = 0;
-
         for (let i = 0; i < contentArray.length; i++) {
           const item = contentArray[i];
-          if (!item || typeof item !== "string" || !item.trim()) {
-            console.log(`  Skipping empty ${contentType} item at index ${i}`);
-            continue;
-          }
+          if (!item || typeof item !== "string" || !item.trim()) continue;
 
-          try {
-            const insertResult = await db.query(
-              `INSERT INTO destination_content (
-                destination_id, content_type, title, content, sort_order, status, created_at
-              ) VALUES (?, ?, ?, ?, ?, 'active', NOW())`,
-              [id, contentType, null, item.trim(), i]
-            );
-
-            console.log(
-              `  ✅ Inserted ${contentType} ${i + 1}: ID ${
-                insertResult.insertId
-              } - "${item.trim().substring(0, 50)}..."`
-            );
-            insertedCount++;
-          } catch (insertError) {
-            console.error(
-              `  ❌ Error inserting ${contentType} item ${i + 1}:`,
-              insertError.message
-            );
-            throw insertError;
-          }
+          await db.query(
+            `INSERT INTO destination_content (
+              destination_id, content_type, title, content, sort_order, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'active', NOW())`,
+            [id, contentType, null, item.trim(), i]
+          );
+          insertedCount++;
         }
-
-        console.log(
-          `🎉 Successfully inserted ${insertedCount}/${contentArray.length} ${contentType} items`
-        );
         return insertedCount;
       };
 
-      // Update content for each type with detailed logging
-      console.log("🔄 Inserting new content...");
-      const attractionsInserted = await insertContent(
-        attractions,
-        "attraction"
-      );
-      const tipsInserted = await insertContent(localTips, "local_tip");
-      const salesInserted = await insertContent(salesPoints, "sales_point");
-
-      console.log(`📊 CONTENT UPDATE SUMMARY:`);
-      console.log(`  Attractions: ${attractionsInserted} inserted`);
-      console.log(`  Local Tips: ${tipsInserted} inserted`);
-      console.log(`  Sales Points: ${salesInserted} inserted`);
-      console.log(
-        `  Total New Items: ${
-          attractionsInserted + tipsInserted + salesInserted
-        }`
-      );
-
-      // Verify what was actually saved
-      const verifyContent = await db.query(
-        "SELECT content_type, COUNT(*) as count FROM destination_content WHERE destination_id = ? AND status = 'active' GROUP BY content_type",
-        [id]
-      );
-
-      console.log("🔍 VERIFICATION - Content in database after update:");
-      verifyContent.forEach((row) => {
-        console.log(`  ${row.content_type}: ${row.count} items`);
-      });
+      await insertContent(attractions, "attraction");
+      await insertContent(localTips, "local_tip");
+      await insertContent(salesPoints, "sales_point");
 
       // Get updated destination with content
       const updatedDestination = await db.query(
         "SELECT * FROM destinations WHERE id = ?",
         [id]
       );
-
       const content = await db.query(
         "SELECT * FROM destination_content WHERE destination_id = ? AND status = 'active' ORDER BY sort_order ASC",
         [id]
       );
 
-      // Group content by type - MATCH DATABASE STRUCTURE
+      // Group content by type
       const groupedContent = {
-        attraction: [], // ✅ Match database content_type
-        local_tip: [], // ✅ Match database content_type
-        sales_point: [], // ✅ Match database content_type
+        attraction: [],
+        local_tip: [],
+        sales_point: [],
       };
 
       content.forEach((item) => {
@@ -786,7 +679,7 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
         }
       });
 
-      // Parse climate
+      // Parse response data
       let destination = updatedDestination[0];
       if (destination.climate && typeof destination.climate === "string") {
         try {
@@ -796,15 +689,31 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
         }
       }
 
-      // ✅ FIXED: Map to frontend expected names
+      // ✅ NEW: Parse images for response and add URLs
+      let destinationImages = [];
+      if (destination.images) {
+        try {
+          const imageData =
+            typeof destination.images === "string"
+              ? JSON.parse(destination.images)
+              : destination.images;
+
+          destinationImages = imageData.map((img) => ({
+            ...img,
+            url: `/uploads/destinations/${img.filename}`,
+          }));
+        } catch (e) {
+          console.warn("Failed to parse images JSON for response");
+        }
+      }
+
       const result = {
         ...destination,
-        attractions: groupedContent.attraction, // ✅ Map attraction -> attractions
-        localTips: groupedContent.local_tip, // ✅ Map local_tip -> localTips
-        salesPoints: groupedContent.sales_point, // ✅ Map sales_point -> salesPoints
+        images: destinationImages, // ✅ NEW: Include images in response
+        attractions: groupedContent.attraction,
+        localTips: groupedContent.local_tip,
+        salesPoints: groupedContent.sales_point,
       };
-
-      console.log("✅ Destination and content updated successfully");
 
       res.json({
         success: true,
@@ -825,15 +734,10 @@ router.put("/:id", auth, adminOnly, async (req, res) => {
   }
 });
 
-// Delete destination (admin only) - FIXED VERSION FOR TWO-TABLE STRUCTURE
+// Delete destination (admin only) - ENHANCED WITH IMAGE CLEANUP
 router.delete("/:id", auth, adminOnly, async (req, res) => {
   try {
     const { id } = req.params;
-
-    console.log("🗑️ === DELETE DESTINATION ===");
-    console.log("ID:", id);
-    console.log("User:", req.user?.name, "Role:", req.user?.role);
-
     const db = require("../config/database");
 
     // Check if destination exists
@@ -843,7 +747,6 @@ router.delete("/:id", auth, adminOnly, async (req, res) => {
     );
 
     if (existingDestination.length === 0) {
-      console.log(`❌ Destination ${id} not found`);
       return res.status(404).json({
         success: false,
         error: "Destination not found",
@@ -851,43 +754,50 @@ router.delete("/:id", auth, adminOnly, async (req, res) => {
     }
 
     const destination = existingDestination[0];
-    console.log(`✅ Found destination: ${destination.name}`);
 
     try {
-      // 1. First delete all related content
-      console.log("🔄 Deleting destination content...");
+      // ✅ NEW: Delete associated images from filesystem
+      if (destination.images) {
+        try {
+          const images =
+            typeof destination.images === "string"
+              ? JSON.parse(destination.images)
+              : destination.images;
+
+          images.forEach((image) => {
+            if (image.filename) {
+              const filePath = path.join(uploadsDir, image.filename);
+              if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`🗑️ Deleted image file: ${image.filename}`);
+              }
+            }
+          });
+        } catch (e) {
+          console.warn("Failed to delete image files:", e);
+        }
+      }
+
+      // Delete content and destination
       const contentDeleteResult = await db.query(
         "DELETE FROM destination_content WHERE destination_id = ?",
         [id]
       );
-      console.log(
-        `🗑️ Deleted ${contentDeleteResult.affectedRows} content items`
-      );
 
-      // 2. Then delete the destination itself
-      console.log("🔄 Deleting destination...");
       const destinationDeleteResult = await db.query(
         "DELETE FROM destinations WHERE id = ?",
         [id]
-      );
-      console.log(
-        `🗑️ Deleted destination: ${destinationDeleteResult.affectedRows} row(s)`
       );
 
       if (destinationDeleteResult.affectedRows === 0) {
         throw new Error("Failed to delete destination - no rows affected");
       }
 
-      console.log(`✅ Successfully deleted destination: ${destination.name}`);
-
       res.json({
         success: true,
         message: `Destination "${destination.name}" deleted successfully`,
         data: {
-          deletedDestination: {
-            id: destination.id,
-            name: destination.name,
-          },
+          deletedDestination: { id: destination.id, name: destination.name },
           contentItemsDeleted: contentDeleteResult.affectedRows,
         },
       });
@@ -901,98 +811,13 @@ router.delete("/:id", auth, adminOnly, async (req, res) => {
       success: false,
       error: "Failed to delete destination",
       details: error.message,
-      debug: {
-        errorType: error.constructor.name,
-        user: req.user?.name,
-        destinationId: req.params.id,
-      },
     });
   }
 });
 
-// Debug route to see raw request data
-router.post("/debug-request", (req, res) => {
-  console.log("🔍 === RAW DEBUG REQUEST ===");
-  console.log("Headers:", req.headers);
-  console.log("Body:", req.body);
-  console.log("Body type:", typeof req.body);
-  console.log("Body keys:", Object.keys(req.body || {}));
-
-  res.json({
-    success: true,
-    received: {
-      body: req.body,
-      bodyType: typeof req.body,
-      bodyKeys: Object.keys(req.body || {}),
-      attractions: req.body.attractions,
-      localTips: req.body.localTips,
-      salesPoints: req.body.salesPoints,
-    },
-  });
-});
-
-// Test endpoint for debugging
-router.post("/simple", destinationController.createSimple);
-
-// Test endpoint WITHOUT authentication
-router.post("/test-no-auth", async (req, res) => {
-  try {
-    console.log("🧪 === TEST WITHOUT AUTH ===");
-    console.log("Request body:", req.body);
-
-    const db = require("../config/database");
-
-    // Hardcoded test values
-    const testValues = [
-      "Test Destination",
-      "Test Country",
-      null, // region
-      null, // overview
-      null, // best_time_to_visit
-      null, // visa_rules
-      "USD", // currency
-      "English", // language
-      "EST", // time_zone
-      null, // climate
-      1, // created_by (hardcoded)
-      "published", // status
-    ];
-
-    console.log("Test values:", testValues);
-
-    // Check for undefined
-    const hasUndefined = testValues.some((val) => val === undefined);
-    console.log("Has undefined?", hasUndefined);
-
-    if (hasUndefined) {
-      return res.status(400).json({
-        success: false,
-        error: "Test values contain undefined",
-      });
-    }
-
-    const sql = `INSERT INTO destinations (
-      name, country, region, overview, best_time_to_visit, visa_rules,
-      currency, language, time_zone, climate, created_by, status,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
-
-    const result = await db.query(sql, testValues);
-
-    res.status(201).json({
-      success: true,
-      message: "Test destination created without auth",
-      data: { id: result.insertId },
-    });
-  } catch (error) {
-    console.error("❌ Test error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: JSON.stringify(error, Object.getOwnPropertyNames(error), 2),
-    });
-  }
-});
+// ============================================
+// EXISTING UTILITY ROUTES
+// ============================================
 
 // Get countries list
 router.get("/meta/countries", async (req, res) => {
