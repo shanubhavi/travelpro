@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: travelpro_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - travelpro_network
+
+  backend:
+    build: .
+    container_name: travelpro_backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=mysql
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - JWT_SECRET=${JWT_SECRET}
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mysql
+    volumes:
+      - ./uploads:/app/uploads
+    networks:
+      - travelpro_network
+
+volumes:
+  mysql_data:
+
+networks:
+  travelpro_network:
+    driver: bridge
+
+# ============================================
+# Dockerfile - Docker Image Configuration
+# ============================================
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy source code
+COPY . .
+
+# Create uploads directory
+RUN mkdir -p uploads/destinations uploads/user-avatars uploads/documents
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:5000/health || exit 1
+
+# Start the application
+CMD ["npm", "start"]
+
+# ============================================
+# .dockerignore - Docker Ignore File
+# ============================================
+node_modules
+npm-debug.log
+.git
+.env
+*.md
+tests
+coverage
+.nyc_output
+uploads/*
+!uploads/.gitkeep
